@@ -1,5 +1,5 @@
 target
-*db/
+/db*/
 _*/
 *.log
 *.sublime*
@@ -10,3 +10,4 @@ _*/
 electrs.toml
 bin/
 data/
+tests/bitcoin-*

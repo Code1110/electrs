@@ -11,22 +11,26 @@ extern crate configure_me;
 
 // export specific versions of rust-bitcoin crates
 pub use bitcoin;
-pub use bitcoincore_rpc;
+use bitcoincore_rpc as rpc;
 
+mod chain;
 mod config;
-mod daemon;
 mod db;
+mod electrum;
 mod index;
-mod map;
+mod mempool;
 mod metrics;
+mod p2p;
+pub mod server;
+mod signals;
+mod status;
+mod tracker;
 mod types;
-mod undo;
 
 pub use {
     config::Config,
-    daemon::Daemon,
-    db::DBStore,
-    index::Index,
-    metrics::{Gauge, GaugeVec, Histogram, Metrics},
-    types::{Confirmed, ScriptHash},
+    electrum::{Client, Rpc},
+    status::Status,
+    tracker::Tracker,
+    types::ScriptHash,
 };
