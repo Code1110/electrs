@@ -299,7 +299,6 @@ dependencies = [
  "crossbeam-channel",
  "env_logger",
  "hyper",
- "libc",
  "log 0.4.11",
  "prometheus",
  "rayon",
