@@ -46,6 +46,7 @@ impl Connection {
     }
 
     fn send(&mut self, msg: NetworkMessage) -> Result<()> {
+        trace!("send: {:?}", msg);
         let raw_msg = message::RawNetworkMessage {
             magic: self.network.magic(),
             payload: msg,
@@ -60,6 +61,7 @@ impl Connection {
             let raw_msg: message::RawNetworkMessage =
                 self.reader.read_next().context("p2p failed to recv")?;
 
+            trace!("recv: {:?}", raw_msg.payload);
             match raw_msg.payload {
                 NetworkMessage::Version(version) => {
                     trace!("peer version: {:?}", version);
@@ -68,10 +70,10 @@ impl Connection {
                 NetworkMessage::Ping(nonce) => {
                     self.send(NetworkMessage::Pong(nonce))?;
                 }
-                NetworkMessage::Verack | NetworkMessage::Alert(_) | NetworkMessage::Addr(_) => {}
-                NetworkMessage::Inv(inv) => {
-                    trace!("inv: {:?}", inv);
-                }
+                NetworkMessage::Verack
+                | NetworkMessage::Alert(_)
+                | NetworkMessage::Addr(_)
+                | NetworkMessage::Inv(_) => {}
                 payload => return Ok(payload),
             };
         }
