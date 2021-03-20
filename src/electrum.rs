@@ -14,7 +14,7 @@ use serde_json::{from_value, json, Value};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 
-use crate::{rpc::RpcApi, status::Status, tracker::Tracker, types::ScriptHash};
+use crate::{metrics::Histogram, rpc::RpcApi, status::Status, tracker::Tracker, types::ScriptHash};
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "1.4";
@@ -63,11 +63,20 @@ impl From<TxGetArgs> for (Txid, bool) {
 /// Electrum RPC handler
 pub struct Rpc {
     tracker: Tracker,
+    rpc_duration: Histogram,
 }
 
 impl Rpc {
     pub fn new(tracker: Tracker) -> Self {
-        Self { tracker }
+        let rpc_duration = tracker.metrics().histogram_vec(
+            "rpc_duration",
+            "RPC duration (in seconds)",
+            &["method"],
+        );
+        Self {
+            tracker,
+            rpc_duration,
+        }
     }
 
     pub fn sync(&mut self) -> Result<()> {
@@ -108,41 +117,50 @@ impl Rpc {
     }
 
     pub fn handle_request(&self, client: &mut Client, value: Value) -> Result<Value> {
-        let mut req: Request = from_value(value).context("invalid request")?;
-        let params = req.params.take();
+        let Request {
+            id,
+            jsonrpc,
+            method,
+            params,
+        } = from_value(value).context("invalid request")?;
+        self.rpc_duration.observe_duration(&method, || {
+            let result = match method.as_str() {
+                "blockchain.scripthash.get_history" => {
+                    self.scripthash_get_history(client, from_value(params)?)
+                }
+                "blockchain.scripthash.subscribe" => {
+                    self.scripthash_subscribe(client, from_value(params)?)
+                }
+                "blockchain.transaction.broadcast" => {
+                    self.transaction_broadcast(from_value(params)?)
+                }
+                "blockchain.transaction.get" => self.transaction_get(from_value(params)?),
+                "blockchain.transaction.get_merkle" => {
+                    self.transaction_get_merkle(from_value(params)?)
+                }
+                "server.banner" => Ok(json!(BANNER)),
+                "server.donation_address" => Ok(Value::Null),
+                "server.peers.subscribe" => Ok(json!([])),
+                "blockchain.block.header" => self.block_header(from_value(params)?),
+                "blockchain.block.headers" => self.block_headers(from_value(params)?),
+                "blockchain.estimatefee" => self.estimate_fee(from_value(params)?),
+                "blockchain.headers.subscribe" => self.headers_subscribe(client),
+                "blockchain.relayfee" => self.relayfee(),
+                "mempool.get_fee_histogram" => self.get_fee_histogram(),
+                "server.ping" => Ok(Value::Null),
+                "server.version" => self.version(from_value(params)?),
+                &_ => bail!("unknown method '{}' with {}", method, params,),
+            };
 
-        let result = match req.method.as_str() {
-            "blockchain.scripthash.get_history" => {
-                self.scripthash_get_history(client, from_value(params)?)
-            }
-            "blockchain.scripthash.subscribe" => {
-                self.scripthash_subscribe(client, from_value(params)?)
-            }
-            "blockchain.transaction.broadcast" => self.transaction_broadcast(from_value(params)?),
-            "blockchain.transaction.get" => self.transaction_get(from_value(params)?),
-            "blockchain.transaction.get_merkle" => self.transaction_get_merkle(from_value(params)?),
-            "server.banner" => Ok(json!(BANNER)),
-            "server.donation_address" => Ok(Value::Null),
-            "server.peers.subscribe" => Ok(json!([])),
-            "blockchain.block.header" => self.block_header(from_value(params)?),
-            "blockchain.block.headers" => self.block_headers(from_value(params)?),
-            "blockchain.estimatefee" => self.estimate_fee(from_value(params)?),
-            "blockchain.headers.subscribe" => self.headers_subscribe(client),
-            "blockchain.relayfee" => self.relayfee(),
-            "mempool.get_fee_histogram" => self.get_fee_histogram(),
-            "server.ping" => Ok(Value::Null),
-            "server.version" => self.version(from_value(params)?),
-            &_ => bail!("unknown method '{}' with {}", req.method, params,),
-        };
-
-        Ok(match result {
-            Ok(value) => json!({"jsonrpc": req.jsonrpc, "id": req.id, "result": value}),
-            Err(err) => {
-                let msg = format!("RPC failed: {:#}", err);
-                warn!("{}", msg);
-                let error = json!({"code": 1, "message": msg});
-                json!({"jsonrpc": req.jsonrpc, "id": req.id, "error": error})
-            }
+            Ok(match result {
+                Ok(value) => json!({"jsonrpc": jsonrpc, "id": id, "result": value}),
+                Err(err) => {
+                    let msg = format!("RPC failed: {:#}", err);
+                    warn!("{}", msg);
+                    let error = json!({"code": 1, "message": msg});
+                    json!({"jsonrpc": jsonrpc, "id": id, "error": error})
+                }
+            })
         })
     }
 

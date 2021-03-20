@@ -26,7 +26,7 @@ pub struct Tracker {
     index: Index,
     mempool: Mempool,
     tx_cache: Arc<RwLock<HashMap<Txid, Transaction>>>,
-    _metrics: Metrics,
+    metrics: Metrics,
 }
 
 impl Tracker {
@@ -37,17 +37,17 @@ impl Tracker {
         let rpc_client =
             rpc::Client::new(rpc_url, rpc_auth).context("failed to connect to daemon RPC")?;
 
-        let _metrics = Metrics::new(config.monitoring_addr)?;
+        let metrics = Metrics::new(config.monitoring_addr)?;
         let store = DBStore::open(Path::new(&config.db_path), config.low_memory)?;
         let chain = Chain::new(config.network);
-        let index = Index::load(store, chain, &_metrics).context("failed to open index")?;
+        let index = Index::load(store, chain, &metrics).context("failed to open index")?;
         Ok(Self {
             rpc_client,
             p2p_client,
             index,
             mempool: Mempool::new(),
             tx_cache: Arc::new(RwLock::new(HashMap::new())),
-            _metrics,
+            metrics,
         })
     }
 
@@ -61,6 +61,10 @@ impl Tracker {
 
     pub(crate) fn fees_histogram(&self) -> &Histogram {
         &self.mempool.fees_histogram()
+    }
+
+    pub(crate) fn metrics(&self) -> &Metrics {
+        &self.metrics
     }
 
     pub fn get_history(&self, status: &Status) -> impl Iterator<Item = Value> {
