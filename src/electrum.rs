@@ -273,7 +273,7 @@ impl Rpc {
     }
 
     fn get_fee_histogram(&self) -> Result<Value> {
-        Ok(json!([]))
+        Ok(json!(self.tracker.fees_histogram()))
     }
 
     fn version(&self, (client_id, client_version): (String, Version)) -> Result<Value> {

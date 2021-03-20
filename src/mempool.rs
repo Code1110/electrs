@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::convert::TryInto;
 use std::iter::FromIterator;
 use std::ops::Bound;
 
@@ -8,6 +9,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoincore_rpc::{json, Client, RpcApi};
 use rayon::prelude::*;
+use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 use crate::types::ScriptHash;
 
@@ -24,6 +26,7 @@ pub(crate) struct Mempool {
     entries: HashMap<Txid, Entry>,
     by_funding: BTreeSet<(ScriptHash, Txid)>,
     by_spending: BTreeSet<(OutPoint, Txid)>,
+    histogram: Histogram,
 
     txid_min: Txid,
     txid_max: Txid,
@@ -35,10 +38,15 @@ impl Mempool {
             entries: Default::default(),
             by_funding: Default::default(),
             by_spending: Default::default(),
+            histogram: Histogram::empty(),
 
             txid_min: Txid::from_inner([0x00; 32]),
             txid_max: Txid::from_inner([0xFF; 32]),
         }
+    }
+
+    pub(crate) fn fees_histogram(&self) -> &Histogram {
+        &self.histogram
     }
 
     pub(crate) fn get(&self, txid: &Txid) -> Option<&Entry> {
@@ -97,6 +105,7 @@ impl Mempool {
         for (txid, tx, entry) in entries {
             self.add_entry(*txid, tx, entry);
         }
+        self.histogram = Histogram::new(self.entries.values().map(|e| (e.fee, e.vsize)));
         debug!(
             "{} mempool txs: {} added, {} removed",
             self.entries.len(),
@@ -136,5 +145,55 @@ impl Mempool {
             let scripthash = ScriptHash::new(&txo.script_pubkey);
             self.by_funding.remove(&(scripthash, txid)); // may have misses
         }
+    }
+}
+
+pub(crate) struct Histogram {
+    /// bins[64-i] contains the total vsize of transactions with fee rate [2**(i-1), 2**i).
+    /// bins[63] = [1, 2)
+    /// bins[62] = [2, 4)
+    /// bins[61] = [4, 8)
+    /// bins[60] = [8, 16)
+    /// ...
+    /// bins[1] = [2**62, 2**63)
+    /// bins[0] = [2**63, 2**64)
+    bins: [u64; Histogram::SIZE],
+}
+
+impl Histogram {
+    const SIZE: usize = 64;
+
+    fn empty() -> Self {
+        Self::new(std::iter::empty())
+    }
+
+    fn new(items: impl Iterator<Item = (Amount, u64)>) -> Self {
+        let mut bins = [0; Self::SIZE];
+        for (fee, vsize) in items {
+            let fee_rate = fee.as_sat() / vsize;
+            let index: usize = fee_rate.leading_zeros().try_into().unwrap();
+            // skip transactions with too low fee rate (<1 sat/vB)
+            if let Some(bin) = bins.get_mut(index) {
+                *bin += vsize
+            }
+        }
+        Self { bins }
+    }
+}
+
+impl Serialize for Histogram {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.bins.len()))?;
+        // https://electrumx-spesmilo.readthedocs.io/en/latest/protocol-methods.html#mempool-get-fee-histogram
+        let mut fee_rate = u64::MAX;
+        for vsize in &self.bins {
+            let element = (fee_rate, *vsize);
+            seq.serialize_element(&element)?;
+            fee_rate >>= 1;
+        }
+        seq.end()
     }
 }

@@ -3,12 +3,20 @@ use bitcoin::{BlockHash, Transaction, Txid};
 use serde_json::Value;
 
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    chain::Chain, config::Config, db::DBStore, index::Index, mempool::Mempool, metrics::Metrics,
-    p2p, rpc, status::Status, types::ScriptHash,
+    chain::Chain,
+    config::Config,
+    db::DBStore,
+    index::Index,
+    mempool::{Histogram, Mempool},
+    metrics::Metrics,
+    p2p, rpc,
+    status::Status,
+    types::ScriptHash,
 };
 
 /// Electrum protocol subscriptions' tracker
@@ -51,6 +59,10 @@ impl Tracker {
         &self.rpc_client
     }
 
+    pub(crate) fn fees_histogram(&self) -> &Histogram {
+        &self.mempool.fees_histogram()
+    }
+
     pub fn get_history(&self, status: &Status) -> impl Iterator<Item = Value> {
         let confirmed = status
             .get_confirmed(&self.index.chain())
@@ -89,7 +101,8 @@ impl Tracker {
         let tx_cache = self.tx_cache.read().unwrap();
         for outpoint in &unspent {
             let tx = tx_cache.get(&outpoint.txid).expect("missing tx");
-            let value = tx.output[outpoint.vout as usize].value;
+            let vout: usize = outpoint.vout.try_into().unwrap();
+            let value = tx.output[vout].value;
             balance += bitcoin::Amount::from_sat(value);
         }
         balance

@@ -73,15 +73,11 @@ impl Chain {
     }
 
     pub(crate) fn get_block_hash(&self, height: usize) -> Option<BlockHash> {
-        self.headers
-            .get(height as usize)
-            .map(|(hash, _header)| *hash)
+        self.headers.get(height).map(|(hash, _header)| *hash)
     }
 
     pub(crate) fn get_block_header(&self, height: usize) -> Option<&BlockHeader> {
-        self.headers
-            .get(height as usize)
-            .map(|(_hash, header)| header)
+        self.headers.get(height).map(|(_hash, header)| header)
     }
 
     pub(crate) fn get_block_height(&self, blockhash: &BlockHash) -> Option<usize> {

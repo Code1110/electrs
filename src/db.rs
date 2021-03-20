@@ -134,15 +134,15 @@ impl DBStore {
         self.db.cf_handle(HEADERS_CF).expect("missing HEADERS_CF")
     }
 
-    pub(crate) fn iter_funding<'a>(&'a self, prefix: Row) -> ScanIterator<'a> {
+    pub(crate) fn iter_funding(&self, prefix: Row) -> ScanIterator {
         self.iter_prefix_cf(self.funding_cf(), prefix)
     }
 
-    pub(crate) fn iter_spending<'a>(&'a self, prefix: Row) -> ScanIterator<'a> {
+    pub(crate) fn iter_spending(&self, prefix: Row) -> ScanIterator {
         self.iter_prefix_cf(self.spending_cf(), prefix)
     }
 
-    pub(crate) fn iter_txid<'a>(&'a self, prefix: Row) -> ScanIterator<'a> {
+    pub(crate) fn iter_txid(&self, prefix: Row) -> ScanIterator {
         self.iter_prefix_cf(self.txid_cf(), prefix)
     }
 

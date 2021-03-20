@@ -137,10 +137,8 @@ fn send(peer_id: usize, peer: &mut Peer, values: &[Value]) -> Result<()> {
 }
 
 fn accept_loop(listener: TcpListener, server_tx: Sender<Event>) -> Result<()> {
-    let mut peer_id = 0;
-    for conn in listener.incoming() {
+    for (peer_id, conn) in listener.incoming().enumerate() {
         let stream = conn.context("failed to accept")?;
-        peer_id += 1;
         let tx = server_tx.clone();
         spawn(move || {
             let result = recv_loop(peer_id, &stream, tx);
