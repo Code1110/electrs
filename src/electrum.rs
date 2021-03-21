@@ -1,11 +1,8 @@
 use anyhow::{bail, Context, Result};
 use bitcoin::{
     consensus::{deserialize, serialize},
-    hashes::{
-        hex::{FromHex, ToHex},
-        Hash,
-    },
-    BlockHash, Transaction, TxMerkleNode, Txid,
+    hashes::hex::{FromHex, ToHex},
+    BlockHash, Transaction, Txid,
 };
 use rayon::prelude::*;
 use serde_derive::{Deserialize, Serialize};
@@ -15,7 +12,7 @@ use std::collections::HashMap;
 use std::iter::FromIterator;
 
 use crate::{
-    cache::Cache, metrics::Histogram, rpc::RpcApi, status::Status, tracker::Tracker,
+    cache::Cache, merkle::Proof, metrics::Histogram, rpc::RpcApi, status::Status, tracker::Tracker,
     types::ScriptHash,
 };
 
@@ -293,32 +290,22 @@ impl Rpc {
             None => bail!("missing block at {}", height),
             Some(blockhash) => blockhash,
         };
-        match self.cache.get_txids(&blockhash, |txids| {
-            self.create_merkle_proof(txid, &txids, height)
-        }) {
-            Some(result) => result,
-            None => {
-                debug!("txids cache miss: {}", blockhash);
-                let txids = self.tracker.rpc_client().get_block_info(&blockhash)?.tx;
-                self.create_merkle_proof(txid, &txids, height)
-            }
-        }
-    }
-
-    fn create_merkle_proof(&self, txid: Txid, txids: &[Txid], height: usize) -> Result<Value> {
-        let pos = match txids.iter().position(|current_txid| *current_txid == txid) {
-            None => bail!("missing tx {} at block {}", txid, height),
-            Some(pos) => pos,
+        let proof_to_value = |proof: &Proof| {
+            json!({
+                "block_height": height,
+                "pos": proof.position(),
+                "merkle": proof.to_hex(),
+            })
         };
-        let nodes: Vec<TxMerkleNode> = txids
-            .iter()
-            .map(|txid| TxMerkleNode::from_hash(txid.as_hash()))
-            .collect();
-        let merkle: Vec<String> = create_merkle_branch(nodes, pos)
-            .into_iter()
-            .map(|node| node.to_hex())
-            .collect();
-        Ok(json!({"block_height": height, "pos": pos, "merkle": merkle}))
+        if let Some(result) = self.cache.get_proof(blockhash, txid, proof_to_value) {
+            return Ok(result);
+        }
+        debug!("txids cache miss: {}", blockhash);
+        let txids = self.tracker.rpc_client().get_block_info(&blockhash)?.tx;
+        match txids.iter().position(|current_txid| *current_txid == txid) {
+            None => bail!("missing tx {} for merkle proof", txid),
+            Some(position) => Ok(proof_to_value(&Proof::create(&txids, position))),
+        }
     }
 
     fn get_fee_histogram(&self) -> Result<Value> {
@@ -340,29 +327,6 @@ impl Rpc {
         let server_id = format!("electrs/{}", ELECTRS_VERSION);
         Ok(json!([server_id, PROTOCOL_VERSION]))
     }
-}
-
-fn create_merkle_branch<T: Hash>(mut hashes: Vec<T>, mut index: usize) -> Vec<T> {
-    let mut result = vec![];
-    while hashes.len() > 1 {
-        if hashes.len() % 2 != 0 {
-            let last = *hashes.last().unwrap();
-            hashes.push(last);
-        }
-        index = if index % 2 == 0 { index + 1 } else { index - 1 };
-        result.push(hashes[index]);
-        index /= 2;
-        hashes = hashes
-            .chunks(2)
-            .map(|pair| {
-                let left = pair[0];
-                let right = pair[1];
-                let input = [&left[..], &right[..]].concat();
-                <T as Hash>::hash(&input)
-            })
-            .collect()
-    }
-    result
 }
 
 fn notification(method: &str, params: &[Value]) -> Value {

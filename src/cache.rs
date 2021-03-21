@@ -1,18 +1,20 @@
-use bitcoin::{Block, BlockHash, Transaction, Txid};
+use bitcoin::{BlockHash, Transaction, Txid};
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use crate::merkle::Proof;
+
 pub struct Cache {
     txs: Arc<RwLock<HashMap<Txid, Transaction>>>,
-    txids: Arc<RwLock<HashMap<BlockHash, Vec<Txid>>>>,
+    proofs: Arc<RwLock<HashMap<(BlockHash, Txid), Proof>>>,
 }
 
 impl Cache {
     pub fn new() -> Self {
         let txs = Arc::new(RwLock::new(HashMap::new()));
-        let txids = Arc::new(RwLock::new(HashMap::new()));
-        Self { txs, txids }
+        let proofs = Arc::new(RwLock::new(HashMap::new()));
+        Self { txs, proofs }
     }
 
     pub(crate) fn add_tx(&self, txid: Txid, f: impl FnOnce() -> Transaction) {
@@ -26,22 +28,21 @@ impl Cache {
         self.txs.read().unwrap().get(txid).map(f)
     }
 
-    pub(crate) fn add_txids(&self, blockhash: BlockHash, block: &Block) {
-        self.txids
+    pub(crate) fn add_proof<F>(&self, blockhash: BlockHash, txid: Txid, f: F)
+    where
+        F: FnOnce() -> Proof,
+    {
+        self.proofs
             .write()
             .unwrap()
-            .entry(blockhash)
-            .or_insert_with(|| block.txdata.iter().map(|tx| tx.txid()).collect());
+            .entry((blockhash, txid))
+            .or_insert_with(f);
     }
 
-    pub(crate) fn get_txids<F, T>(&self, blockhash: &BlockHash, f: F) -> Option<T>
+    pub(crate) fn get_proof<F, T>(&self, blockhash: BlockHash, txid: Txid, f: F) -> Option<T>
     where
-        F: FnOnce(&[Txid]) -> T,
+        F: FnOnce(&Proof) -> T,
     {
-        self.txids
-            .read()
-            .unwrap()
-            .get(blockhash)
-            .map(|txids| f(&txids))
+        self.proofs.read().unwrap().get(&(blockhash, txid)).map(f)
     }
 }

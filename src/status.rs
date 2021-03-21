@@ -7,12 +7,14 @@ use rayon::prelude::*;
 use serde_json::{json, Value};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::convert::TryFrom;
 
 use crate::{
     cache::Cache,
     chain::Chain,
     index::Index,
     mempool::Mempool,
+    merkle::Proof,
     p2p,
     types::{ScriptHash, StatusHash},
 };
@@ -225,19 +227,19 @@ impl Status {
 
         let funding_blockhashes = index.filter_by_funding(self.scripthash);
         self.for_new_blocks(funding_blockhashes, client, |blockhash, block| {
-            cache.add_txids(blockhash, &block);
-            for (tx, pos) in block.txdata.into_iter().zip(0u32..) {
+            let txids: Vec<Txid> = block.txdata.iter().map(|tx| tx.txid()).collect();
+            for (pos, (tx, txid)) in block.txdata.into_iter().zip(txids.iter()).enumerate() {
                 let funding_outputs = self.filter_outputs(&tx);
                 if funding_outputs.is_empty() {
                     continue;
                 }
-                let txid = tx.txid();
-                cache.add_tx(txid, || tx.clone());
+                cache.add_tx(*txid, move || tx);
+                cache.add_proof(blockhash, *txid, || Proof::create(&txids, pos));
                 outpoints.extend(make_outpoints(&txid, &funding_outputs));
                 result
                     .entry(blockhash)
                     .or_default()
-                    .entry((pos, txid))
+                    .entry((u32::try_from(pos).unwrap(), *txid))
                     .or_default()
                     .outputs = funding_outputs;
             }
@@ -250,18 +252,18 @@ impl Status {
             spending_blockhashes.into_iter(),
             client,
             |blockhash, block| {
-                cache.add_txids(blockhash, &block);
-                for (tx, pos) in block.txdata.into_iter().zip(0u32..) {
+                let txids: Vec<Txid> = block.txdata.iter().map(|tx| tx.txid()).collect();
+                for (pos, (tx, txid)) in block.txdata.into_iter().zip(txids.iter()).enumerate() {
                     let spent_outpoints = self.filter_inputs(&tx, &outpoints);
                     if spent_outpoints.is_empty() {
                         continue;
                     }
-                    let txid = tx.txid();
-                    cache.add_tx(txid, || tx.clone());
+                    cache.add_tx(*txid, move || tx);
+                    cache.add_proof(blockhash, *txid, || Proof::create(&txids, pos));
                     result
                         .entry(blockhash)
                         .or_default()
-                        .entry((pos, txid))
+                        .entry((u32::try_from(pos).unwrap(), *txid))
                         .or_default()
                         .spent = spent_outpoints;
                 }
