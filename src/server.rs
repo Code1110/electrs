@@ -1,23 +1,33 @@
 use anyhow::{Context, Result};
-use crossbeam_channel::{select, unbounded, Sender};
+use bitcoin::BlockHash;
+use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
 use rayon::prelude::*;
 use serde_json::{de::from_str, Value};
 
 use std::{
     collections::hash_map::HashMap,
+    convert::TryFrom,
     io::{BufRead, BufReader, Write},
     net::{Shutdown, TcpListener, TcpStream},
     thread,
 };
 
-use crate::{signals, Client, Config, Rpc};
+use crate::{
+    config::Config,
+    electrum::{Client, Rpc},
+    rpc::{self, RpcApi},
+    signals,
+};
 
-fn spawn(f: impl 'static + Send + FnOnce() -> Result<()>) -> thread::JoinHandle<()> {
-    let builder = thread::Builder::new();
+fn spawn(
+    name: &'static str,
+    f: impl 'static + Send + FnOnce() -> Result<()>,
+) -> thread::JoinHandle<()> {
+    let builder = thread::Builder::new().name(name.to_owned());
     builder
-        .spawn(|| {
+        .spawn(move || {
             if let Err(e) = f() {
-                error!("thread failed: {}", e);
+                warn!("{} thread failed: {}", name, e);
             }
         })
         .expect("failed to spawn a thread")
@@ -37,12 +47,29 @@ impl Peer {
     }
 }
 
+fn tip_receiver(config: &Config) -> Result<Receiver<BlockHash>> {
+    let (tip_tx, tip_rx) = bounded(0);
+    let rpc_url = format!("http://{}", config.daemon_rpc_addr);
+    let rpc_auth = rpc::Auth::CookieFile(config.daemon_cookie_file.clone());
+    let rpc_client =
+        rpc::Client::new(rpc_url, rpc_auth).context("failed to connect to daemon RPC")?;
+
+    let duration = u64::try_from(config.wait_duration.as_millis()).unwrap();
+    spawn("tip", move || loop {
+        let tip = rpc_client.get_best_block_hash()?;
+        tip_tx.send(tip).context("failed to send tip")?;
+        rpc_client.wait_for_new_block(duration)?;
+    });
+    Ok(tip_rx)
+}
+
 pub fn run(config: Config, mut rpc: Rpc) -> Result<()> {
     let listener = TcpListener::bind(config.electrum_rpc_addr)?;
+    let tip_rx = tip_receiver(&config)?;
     info!("serving Electrum RPC on {}", listener.local_addr()?);
 
     let (server_tx, server_rx) = unbounded();
-    spawn(|| accept_loop(listener, server_tx)); // detach accepting thread
+    spawn("accept_loop", || accept_loop(listener, server_tx)); // detach accepting thread
     let signal_rx = signals::register();
 
     let mut peers = HashMap::<usize, Peer>::new();
@@ -50,22 +77,22 @@ pub fn run(config: Config, mut rpc: Rpc) -> Result<()> {
         select! {
             recv(signal_rx) -> sig => {
                 match sig.context("signal channel disconnected")? {
-                    signals::Signal::Exit => {
-                        info!("stopping Electrum RPC server");
-                        return Ok(())
-                    }
+                    signals::Signal::Exit => break,
                     signals::Signal::Trigger => (),
                 }
-            }
+            },
+            recv(tip_rx) -> tip => match tip {
+                Ok(_) => (), // sync and update
+                Err(_) => break, // daemon is shutting down
+            },
             recv(server_rx) -> event => {
                 let event = event.context("server disconnected")?;
                 let buffered_events = server_rx.iter().take(server_rx.len());
                 for event in std::iter::once(event).chain(buffered_events) {
                     handle(&rpc, &mut peers, event);
                 }
-            }
-            default(config.wait_duration) => (),
-        }
+            },
+        };
         rpc.sync().context("rpc sync failed")?;
         peers
             .par_iter_mut()
@@ -75,6 +102,8 @@ pub fn run(config: Config, mut rpc: Rpc) -> Result<()> {
             })
             .collect::<Result<_>>()?;
     }
+    info!("stopping Electrum RPC server");
+    return Ok(());
 }
 
 struct Event {
@@ -140,7 +169,7 @@ fn accept_loop(listener: TcpListener, server_tx: Sender<Event>) -> Result<()> {
     for (peer_id, conn) in listener.incoming().enumerate() {
         let stream = conn.context("failed to accept")?;
         let tx = server_tx.clone();
-        spawn(move || {
+        spawn("recv_loop", move || {
             let result = recv_loop(peer_id, &stream, tx);
             let _ = stream.shutdown(Shutdown::Both);
             result
