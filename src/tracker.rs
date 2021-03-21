@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
-use bitcoin::{BlockHash, Transaction, Txid};
+use bitcoin::{BlockHash, Txid};
 use serde_json::Value;
 
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
 
 use crate::{
+    cache::Cache,
     chain::Chain,
     config::Config,
     db::DBStore,
@@ -25,7 +24,6 @@ pub struct Tracker {
     rpc_client: rpc::Client,
     index: Index,
     mempool: Mempool,
-    tx_cache: Arc<RwLock<HashMap<Txid, Transaction>>>,
     metrics: Metrics,
 }
 
@@ -46,7 +44,6 @@ impl Tracker {
             p2p_client,
             index,
             mempool: Mempool::new(),
-            tx_cache: Arc::new(RwLock::new(HashMap::new())),
             metrics,
         })
     }
@@ -80,9 +77,7 @@ impl Tracker {
     }
 
     pub fn subscribe(&self, script_hash: ScriptHash) -> Result<Status> {
-        let mut status = Status::new(script_hash);
-        self.update_status(&mut status)?;
-        Ok(status)
+        Ok(Status::new(script_hash))
     }
 
     pub fn sync(&mut self) -> Result<()> {
@@ -92,22 +87,23 @@ impl Tracker {
         Ok(())
     }
 
-    pub fn update_status(&self, status: &mut Status) -> Result<bool> {
+    pub fn update_status(&self, status: &mut Status, cache: &Cache) -> Result<bool> {
         let prev_statushash = status.statushash();
-        let txs = status.sync(&self.index, &self.mempool, &self.p2p_client)?;
-        self.tx_cache.write().unwrap().extend(txs);
+        status.sync(&self.index, &self.mempool, &self.p2p_client, cache)?;
         Ok(prev_statushash != status.statushash())
     }
 
-    pub fn get_balance(&self, status: &Status) -> bitcoin::Amount {
+    pub fn get_balance(&self, status: &Status, cache: &Cache) -> bitcoin::Amount {
         let unspent = status.get_unspent(&self.index.chain());
         let mut balance = bitcoin::Amount::ZERO;
-        let tx_cache = self.tx_cache.read().unwrap();
         for outpoint in &unspent {
-            let tx = tx_cache.get(&outpoint.txid).expect("missing tx");
-            let vout: usize = outpoint.vout.try_into().unwrap();
-            let value = tx.output[vout].value;
-            balance += bitcoin::Amount::from_sat(value);
+            let value = cache
+                .get_tx(&outpoint.txid, |tx| {
+                    let vout: usize = outpoint.vout.try_into().unwrap();
+                    bitcoin::Amount::from_sat(tx.output[vout].value)
+                })
+                .expect("missing tx");
+            balance += value;
         }
         balance
     }
@@ -115,12 +111,5 @@ impl Tracker {
     pub fn get_blockhash_by_txid(&self, txid: Txid) -> Option<BlockHash> {
         // Note: there are two blocks with coinbase transactions having same txid (see BIP-30)
         self.index.filter_by_txid(txid).next()
-    }
-
-    pub fn get_cached_tx<F, T>(&self, txid: Txid, f: F) -> Option<T>
-    where
-        F: FnOnce(&Transaction) -> T,
-    {
-        self.tx_cache.read().unwrap().get(&txid).map(f)
     }
 }

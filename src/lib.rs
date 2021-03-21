@@ -13,6 +13,7 @@ extern crate configure_me;
 pub use bitcoin;
 use bitcoincore_rpc as rpc;
 
+mod cache;
 mod chain;
 mod config;
 mod db;
@@ -28,6 +29,7 @@ mod tracker;
 mod types;
 
 pub use {
+    cache::Cache,
     config::Config,
     electrum::{Client, Rpc},
     status::Status,

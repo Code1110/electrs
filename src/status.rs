@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
+    cache::Cache,
     chain::Chain,
     index::Index,
     mempool::Mempool,
@@ -216,7 +217,7 @@ impl Status {
         &self,
         index: &Index,
         client: &p2p::Client,
-        tx_cache: &mut HashMap<Txid, Transaction>,
+        cache: &Cache,
         outpoints: &mut HashSet<OutPoint>,
     ) -> Result<HashMap<BlockHash, Vec<TxEntry>>> {
         type PosTxid = (u32, Txid);
@@ -230,7 +231,7 @@ impl Status {
                     continue;
                 }
                 let txid = tx.txid();
-                tx_cache.entry(txid).or_insert(tx);
+                cache.add_tx(txid, || tx.clone());
                 outpoints.extend(make_outpoints(&txid, &funding_outputs));
                 result
                     .entry(blockhash)
@@ -254,7 +255,7 @@ impl Status {
                         continue;
                     }
                     let txid = tx.txid();
-                    tx_cache.entry(txid).or_insert(tx);
+                    cache.add_tx(txid, || tx.clone());
                     result
                         .entry(blockhash)
                         .or_default()
@@ -282,7 +283,7 @@ impl Status {
     fn sync_mempool(
         &self,
         mempool: &Mempool,
-        tx_cache: &mut HashMap<Txid, Transaction>,
+        cache: &Cache,
         outpoints: &mut HashSet<OutPoint>,
     ) -> Vec<TxEntry> {
         let mut result = HashMap::<Txid, Entry>::new();
@@ -291,9 +292,7 @@ impl Status {
             assert!(!funding_outputs.is_empty());
             outpoints.extend(make_outpoints(&entry.txid, &funding_outputs));
             result.entry(entry.txid).or_default().outputs = funding_outputs;
-            tx_cache
-                .entry(entry.txid)
-                .or_insert_with(|| entry.tx.clone());
+            cache.add_tx(entry.txid, || entry.tx.clone());
         }
         for entry in outpoints
             .iter()
@@ -302,9 +301,7 @@ impl Status {
             let spent_outpoints = self.filter_inputs(&entry.tx, &outpoints);
             assert!(!spent_outpoints.is_empty());
             result.entry(entry.txid).or_default().spent = spent_outpoints;
-            tx_cache
-                .entry(entry.txid)
-                .or_insert_with(|| entry.tx.clone());
+            cache.add_tx(entry.txid, || entry.tx.clone());
         }
         result
             .into_iter()
@@ -333,13 +330,13 @@ impl Status {
         index: &Index,
         mempool: &Mempool,
         client: &p2p::Client,
-    ) -> Result<HashMap<Txid, Transaction>> {
-        let mut tx_cache = HashMap::new();
+        cache: &Cache,
+    ) -> Result<()> {
         let mut outpoints: HashSet<OutPoint> = self.funding_confirmed(index.chain());
 
         let new_tip = index.chain().tip();
         if self.tip != new_tip {
-            let update = self.sync_confirmed(index, client, &mut tx_cache, &mut outpoints)?;
+            let update = self.sync_confirmed(index, client, cache, &mut outpoints)?;
             self.confirmed.extend(update);
             self.tip = new_tip;
         }
@@ -350,12 +347,12 @@ impl Status {
                 self.confirmed.len()
             );
         }
-        self.mempool = self.sync_mempool(mempool, &mut tx_cache, &mut outpoints);
+        self.mempool = self.sync_mempool(mempool, cache, &mut outpoints);
         if !self.mempool.is_empty() {
             debug!("{} mempool transactions", self.mempool.len());
         }
         self.statushash = self.compute_status_hash(index.chain(), mempool);
-        Ok(tx_cache)
+        Ok(())
     }
 
     pub fn statushash(&self) -> Option<StatusHash> {

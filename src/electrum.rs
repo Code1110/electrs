@@ -14,7 +14,10 @@ use serde_json::{from_value, json, Value};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 
-use crate::{metrics::Histogram, rpc::RpcApi, status::Status, tracker::Tracker, types::ScriptHash};
+use crate::{
+    cache::Cache, metrics::Histogram, rpc::RpcApi, status::Status, tracker::Tracker,
+    types::ScriptHash,
+};
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "1.4";
@@ -63,6 +66,7 @@ impl From<TxGetArgs> for (Txid, bool) {
 /// Electrum RPC handler
 pub struct Rpc {
     tracker: Tracker,
+    cache: Cache,
     rpc_duration: Histogram,
 }
 
@@ -73,8 +77,10 @@ impl Rpc {
             "RPC duration (in seconds)",
             &["method"],
         );
+        let cache = Cache::new();
         Self {
             tracker,
+            cache,
             rpc_duration,
         }
     }
@@ -89,7 +95,7 @@ impl Rpc {
             .status
             .par_iter_mut()
             .filter_map(|(scripthash, status)| -> Option<Result<Value>> {
-                match self.tracker.update_status(status) {
+                match self.tracker.update_status(status, &self.cache) {
                     Ok(true) => Some(Ok(notification(
                         "blockchain.scripthash.subscribe",
                         &[json!(scripthash), json!(status.statushash())],
@@ -259,21 +265,26 @@ impl Rpc {
 
     fn transaction_get(&self, args: TxGetArgs) -> Result<Value> {
         let (txid, verbose) = args.into();
-        let blockhash = self.tracker.get_blockhash_by_txid(txid);
-        let rpc_client = self.tracker.rpc_client();
         if verbose {
-            let info = rpc_client.get_raw_transaction_info(&txid, blockhash.as_ref())?;
+            let blockhash = self.tracker.get_blockhash_by_txid(txid);
+            let info = self
+                .tracker
+                .rpc_client()
+                .get_raw_transaction_info(&txid, blockhash.as_ref())?;
             return Ok(json!(info));
         }
-        Ok(
-            match self
-                .tracker
-                .get_cached_tx(txid, |tx| serialize(tx).to_hex())
-            {
-                Some(tx_hex) => json!(tx_hex),
-                None => json!(rpc_client.get_raw_transaction_hex(&txid, blockhash.as_ref())?),
-            },
-        )
+        let cached = self.cache.get_tx(&txid, |tx| serialize(tx).to_hex());
+        Ok(match cached {
+            Some(tx_hex) => json!(tx_hex),
+            None => {
+                warn!("cache miss {}", txid);
+                let blockhash = self.tracker.get_blockhash_by_txid(txid);
+                json!(self
+                    .tracker
+                    .rpc_client()
+                    .get_raw_transaction_hex(&txid, blockhash.as_ref())?)
+            }
+        })
     }
 
     fn transaction_get_merkle(&self, (txid, height): (Txid, usize)) -> Result<Value> {
