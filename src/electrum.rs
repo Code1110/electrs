@@ -277,7 +277,7 @@ impl Rpc {
         Ok(match cached {
             Some(tx_hex) => json!(tx_hex),
             None => {
-                warn!("cache miss {}", txid);
+                debug!("tx cache miss: {}", txid);
                 let blockhash = self.tracker.get_blockhash_by_txid(txid);
                 json!(self
                     .tracker
@@ -293,9 +293,21 @@ impl Rpc {
             None => bail!("missing block at {}", height),
             Some(blockhash) => blockhash,
         };
-        let txids = self.tracker.rpc_client().get_block_info(&blockhash)?.tx;
+        match self.cache.get_txids(&blockhash, |txids| {
+            self.create_merkle_proof(txid, &txids, height)
+        }) {
+            Some(result) => result,
+            None => {
+                debug!("txids cache miss: {}", blockhash);
+                let txids = self.tracker.rpc_client().get_block_info(&blockhash)?.tx;
+                self.create_merkle_proof(txid, &txids, height)
+            }
+        }
+    }
+
+    fn create_merkle_proof(&self, txid: Txid, txids: &[Txid], height: usize) -> Result<Value> {
         let pos = match txids.iter().position(|current_txid| *current_txid == txid) {
-            None => bail!("missing tx {} at block {}", txid, blockhash),
+            None => bail!("missing tx {} at block {}", txid, height),
             Some(pos) => pos,
         };
         let nodes: Vec<TxMerkleNode> = txids

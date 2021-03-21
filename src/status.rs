@@ -225,6 +225,7 @@ impl Status {
 
         let funding_blockhashes = index.filter_by_funding(self.scripthash);
         self.for_new_blocks(funding_blockhashes, client, |blockhash, block| {
+            cache.add_txids(blockhash, &block);
             for (tx, pos) in block.txdata.into_iter().zip(0u32..) {
                 let funding_outputs = self.filter_outputs(&tx);
                 if funding_outputs.is_empty() {
@@ -249,6 +250,7 @@ impl Status {
             spending_blockhashes.into_iter(),
             client,
             |blockhash, block| {
+                cache.add_txids(blockhash, &block);
                 for (tx, pos) in block.txdata.into_iter().zip(0u32..) {
                     let spent_outpoints = self.filter_inputs(&tx, &outpoints);
                     if spent_outpoints.is_empty() {
