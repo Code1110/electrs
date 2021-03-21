@@ -95,7 +95,7 @@ fn make_outpoints<'a>(txid: &'a Txid, outputs: &'a [u32]) -> impl Iterator<Item 
 }
 
 impl Status {
-    pub(crate) fn new(scripthash: ScriptHash) -> Self {
+    pub fn new(scripthash: ScriptHash) -> Self {
         Self {
             scripthash,
             tip: BlockHash::default(),

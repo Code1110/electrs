@@ -240,10 +240,8 @@ impl Rpc {
         client: &mut Client,
         (scripthash,): (ScriptHash,),
     ) -> Result<Value> {
-        let status = self
-            .tracker
-            .subscribe(scripthash)
-            .context("failed to subscribe")?;
+        let mut status = Status::new(scripthash);
+        self.tracker.update_status(&mut status, &self.cache)?;
         let statushash = status.statushash();
         client.status.insert(scripthash, status); // skip if already exists
         Ok(json!(statushash))

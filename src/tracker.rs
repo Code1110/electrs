@@ -15,7 +15,6 @@ use crate::{
     metrics::Metrics,
     p2p, rpc,
     status::Status,
-    types::ScriptHash,
 };
 
 /// Electrum protocol subscriptions' tracker
@@ -74,10 +73,6 @@ impl Tracker {
             .into_iter()
             .map(|entry| entry.value());
         confirmed.chain(mempool)
-    }
-
-    pub fn subscribe(&self, script_hash: ScriptHash) -> Result<Status> {
-        Ok(Status::new(script_hash))
     }
 
     pub fn sync(&mut self) -> Result<()> {
