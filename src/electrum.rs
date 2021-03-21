@@ -261,11 +261,19 @@ impl Rpc {
         let (txid, verbose) = args.into();
         let blockhash = self.tracker.get_blockhash_by_txid(txid);
         let rpc_client = self.tracker.rpc_client();
-        Ok(if verbose {
-            json!(rpc_client.get_raw_transaction_info(&txid, blockhash.as_ref())?)
-        } else {
-            json!(rpc_client.get_raw_transaction_hex(&txid, blockhash.as_ref())?)
-        })
+        if verbose {
+            let info = rpc_client.get_raw_transaction_info(&txid, blockhash.as_ref())?;
+            return Ok(json!(info));
+        }
+        Ok(
+            match self
+                .tracker
+                .get_cached_tx(txid, |tx| serialize(tx).to_hex())
+            {
+                Some(tx_hex) => json!(tx_hex),
+                None => json!(rpc_client.get_raw_transaction_hex(&txid, blockhash.as_ref())?),
+            },
+        )
     }
 
     fn transaction_get_merkle(&self, (txid, height): (Txid, usize)) -> Result<Value> {

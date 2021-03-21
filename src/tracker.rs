@@ -116,4 +116,11 @@ impl Tracker {
         // Note: there are two blocks with coinbase transactions having same txid (see BIP-30)
         self.index.filter_by_txid(txid).next()
     }
+
+    pub fn get_cached_tx<F, T>(&self, txid: Txid, f: F) -> Option<T>
+    where
+        F: FnOnce(&Transaction) -> T,
+    {
+        self.tx_cache.read().unwrap().get(&txid).map(f)
+    }
 }
