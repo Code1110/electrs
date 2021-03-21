@@ -20,6 +20,7 @@ mod db;
 mod electrum;
 mod index;
 mod mempool;
+mod merkle;
 mod metrics;
 mod p2p;
 pub mod server;
